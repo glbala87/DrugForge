@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.git/
+.venv/
+venv/
+data/processed/*.pt
+saved_models/
+generated_results/
+Affinities/
+logs/
+.DS_Store
+*.egg-info/

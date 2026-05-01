@@ -1,0 +1,12 @@
+torch>=2.0.0
+torch-geometric>=2.3.0
+torch-scatter
+torch-sparse
+rdkit-pypi>=2022.9.1
+selfies>=2.1.1
+pandas>=1.5.0
+numpy>=1.23.0
+scipy>=1.10.0
+scikit-learn>=1.2.0
+tqdm>=4.64.0
+networkx>=3.0
