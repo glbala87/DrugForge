@@ -10,39 +10,18 @@ DrugForge jointly learns to predict how strongly a drug binds to a protein targe
 
 - [Architecture Overview](#architecture-overview)
 - [Installation](#installation)
-  - [Prerequisites](#prerequisites)
-  - [Install from Source](#install-from-source)
-  - [Optional Extras](#optional-extras)
-  - [Verify Installation](#verify-installation)
-- [Data Preparation](#data-preparation)
-  - [Input CSV Format](#input-csv-format)
-  - [Running Data Preparation](#running-data-preparation)
-- [Training](#training)
-  - [Basic Training](#basic-training)
-  - [Training Options](#training-options)
-  - [Resume from Checkpoint](#resume-from-checkpoint)
-  - [Graceful Shutdown](#graceful-shutdown)
-  - [Training Output](#training-output)
-- [Evaluation](#evaluation)
-- [Drug Generation](#drug-generation)
-  - [Batch Generation](#batch-generation)
-  - [Interactive Inference](#interactive-inference)
-  - [Affinity Prediction](#affinity-prediction)
-  - [Compound Screening](#compound-screening)
+- [Execution: Complete Pipeline](#execution-complete-pipeline)
+- [Execution: Individual Scripts](#execution-individual-scripts)
 - [Python API](#python-api)
 - [REST API Server](#rest-api-server)
-  - [Starting the Server](#starting-the-server)
-  - [API Endpoints](#api-endpoints)
-  - [Request Examples](#request-examples)
 - [Docker Deployment](#docker-deployment)
 - [Task Modes](#task-modes)
 - [Supported Datasets](#supported-datasets)
 - [Evaluation Metrics](#evaluation-metrics)
 - [Configuration Reference](#configuration-reference)
-  - [Model Configuration](#model-configuration)
-  - [Training Configuration](#training-configuration)
 - [Testing](#testing)
 - [Project Structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
 - [License](#license)
 
 ---
@@ -80,43 +59,83 @@ Protein Sequence -> Physicochemical Features -> Protein Transformer (or ESM-2 Pr
 
 ## Installation
 
-### Prerequisites
+### System Requirements
 
-- **Python** >= 3.10
-- **PyTorch** >= 2.0
-- **CUDA** (optional, for GPU training)
+- **OS:** Linux, macOS, or Windows (WSL recommended)
+- **Python:** 3.10, 3.11, or 3.12
+- **RAM:** 8 GB minimum (16 GB recommended for training)
+- **GPU:** Optional. NVIDIA GPU with CUDA 11.8+ for accelerated training
+- **Disk:** ~2 GB for dependencies, ~1.5 GB for processed datasets
 
-### Install from Source
+### Tested Dependency Versions
+
+| Package | Version |
+|---------|---------|
+| Python | 3.13.9 |
+| PyTorch | 2.9.1 |
+| PyTorch Geometric | 2.7.0 |
+| RDKit | 2026.03.1 |
+| scikit-learn | 1.7.2 |
+| scipy | 1.16.3 |
+| numpy | 2.3.5 |
+| pandas | 2.3.3 |
+
+### Step 1: Clone the Repository
 
 ```bash
-# Clone the repository
-git clone <repo-url> DrugForge
+git clone https://github.com/glbala87/DrugForge.git
 cd DrugForge
-
-# Create a virtual environment (recommended)
-python -m venv .venv
-source .venv/bin/activate    # Linux/macOS
-# .venv\Scripts\activate     # Windows
-
-# Install core dependencies
-pip install -e .
 ```
 
-If PyTorch Geometric installation fails, install it separately following the [official instructions](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html):
+### Step 2: Create a Virtual Environment
 
 ```bash
-# Example for PyTorch 2.4 + CPU
+python -m venv .venv
+source .venv/bin/activate        # Linux / macOS
+# .venv\Scripts\activate         # Windows
+```
+
+### Step 3: Install PyTorch
+
+Choose the right command for your hardware:
+
+```bash
+# CPU only
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# NVIDIA GPU (CUDA 11.8)
+pip install torch --index-url https://download.pytorch.org/whl/cu118
+
+# NVIDIA GPU (CUDA 12.1)
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Apple Silicon (MPS) -- use the default pip install
+pip install torch
+```
+
+### Step 4: Install PyTorch Geometric
+
+```bash
+# After PyTorch is installed, install PyG extensions matching your PyTorch + CUDA version
+# Example for PyTorch 2.4 + CPU:
 pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-2.4.0+cpu.html
+pip install torch-geometric
+
+# For GPU (CUDA 12.1):
+pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-2.4.0+cu121.html
 pip install torch-geometric
 ```
 
-For GPU support, install PyTorch with CUDA first:
+See the [PyG installation guide](https://pytorch-geometric.readthedocs.io/en/latest/install/installation.html) for other combinations.
+
+### Step 5: Install DrugForge
 
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu121
+# Core installation
+pip install -e .
 ```
 
-### Optional Extras
+### Step 6: Install Optional Extras
 
 ```bash
 # REST API server (FastAPI + Uvicorn)
@@ -125,154 +144,217 @@ pip install -e ".[api]"
 # ESM-2 protein language model support
 pip install -e ".[esm]"
 
-# Development and testing tools
+# Development and testing tools (pytest)
 pip install -e ".[dev]"
 
-# All extras at once
+# Everything at once
 pip install -e ".[api,esm,dev]"
 ```
 
-### Verify Installation
+### Step 7: Verify Installation
 
 ```bash
-# Run the test suite (54 tests)
+# Quick check -- should print no errors
+python -c "from model import DrugForge; from config import ModelConfig; print('DrugForge OK')"
+
+# Run the test suite (54 tests, ~60 seconds)
 pytest tests/ -v
 
-# Run the full validation suite (metrics, tokenizer, data pipeline, training, generation)
+# Run the full validation suite (61 checks, ~120 seconds)
 python validate.py
+```
+
+Expected output:
+```
+pytest:       54 passed
+validate.py:  61 passed, 0 failed
 ```
 
 ---
 
-## Data Preparation
+## Execution: Complete Pipeline
 
-### Input CSV Format
+This section walks through the entire workflow from raw data to generated drug molecules.
 
-Place training and test CSV files in the `data/` directory. Each CSV must contain these columns:
+### Step 1: Prepare Your Data
 
-| Column | Description | Example |
-|--------|-------------|---------|
-| `compound_iso_smiles` | Drug molecule in SMILES format | `CCO`, `c1ccccc1` |
-| `target_smiles` | Target SMILES for decoder training | same as `compound_iso_smiles` or a reference |
-| `target_sequence` | Protein amino acid sequence | `MKTAYIAKQRQISFVKSH...` |
-| `affinity` | Binding affinity value (pKd for DTA, binary 0/1 for DTI) | `7.5` |
+Place CSV files in the `data/` directory with this exact column format:
+
+| Column | Type | Description | Example |
+|--------|------|-------------|---------|
+| `compound_iso_smiles` | string | Drug molecule in SMILES notation | `CC(=O)Oc1ccccc1C(=O)O` |
+| `target_smiles` | string | SMILES used for decoder training | same as `compound_iso_smiles` |
+| `target_sequence` | string | Full protein amino acid sequence | `MKTAYIAKQRQISFVKSH...` |
+| `affinity` | float | Binding affinity (pKd for DTA, 0/1 for DTI) | `7.5` |
 
 File naming convention:
 ```
 data/
   davis_train.csv
   davis_test.csv
-  kiba_train.csv
-  kiba_test.csv
-  bindingdb_train.csv
-  bindingdb_test.csv
 ```
 
-### Running Data Preparation
+### Step 2: Preprocess Data
 
 ```bash
-# Process a single dataset
 python create_data.py davis
-
-# Process all datasets
-python create_data.py
-
-# With ESM-2 protein embeddings (requires fair-esm package)
-python create_data.py davis --esm2
-
-# Skip auxiliary task targets (faster processing)
-python create_data.py davis --no-aux
 ```
 
-This will generate:
-- `data/<dataset>_tokenizer.pkl` and `data/<dataset>_tokenizer.json` -- molecular tokenizer
-- `data/processed/<dataset>_train.pt` -- preprocessed training data
-- `data/processed/<dataset>_test.pt` -- preprocessed test data
-- `data/<dataset>_desc_stats.pkl` -- descriptor normalization statistics (if auxiliary tasks enabled)
+This computes molecular graphs, protein feature matrices, tokenizer vocabulary, Morgan fingerprints, molecular descriptors, and functional group labels. Output:
+```
+data/davis_tokenizer.json          # Molecular tokenizer (safe JSON format)
+data/davis_tokenizer.pkl           # Molecular tokenizer (pickle, legacy)
+data/davis_desc_stats.pkl          # Descriptor normalization stats
+data/processed/davis_train.pt      # Preprocessed training data
+data/processed/davis_test.pt       # Preprocessed test data
+```
 
----
+Options:
+```bash
+python create_data.py davis --esm2      # Use ESM-2 protein embeddings (requires fair-esm)
+python create_data.py davis --no-aux    # Skip auxiliary targets (faster)
+python create_data.py                   # Process all datasets (davis, kiba, bindingdb)
+```
 
-## Training
-
-### Basic Training
+### Step 3: Train the Model
 
 ```bash
+# Basic training (500 epochs, batch 32, auto device detection)
 python train.py --dataset davis
+
+# GPU training with custom settings
+python train.py --dataset davis \
+    --device cuda:0 \
+    --epochs 500 \
+    --batch-size 64 \
+    --lr 3e-4 \
+    --task-mode dta \
+    --eval-every 20 \
+    --checkpoint-every 50
 ```
 
-### Training Options
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--dataset` | `bindingdb` | Dataset name: `davis`, `kiba`, or `bindingdb` |
-| `--task-mode` | `dta` | Task mode: `dta`, `dti`, `moa`, or `multi` |
-| `--device` | auto | Device: `cpu`, `cuda:0`, `cuda:1`, etc. |
-| `--epochs` | `500` | Number of training epochs |
-| `--batch-size` | `32` | Training batch size |
-| `--lr` | `3e-4` | Learning rate |
-| `--eval-every` | `20` | Evaluate every N epochs |
-| `--checkpoint-every` | `50` | Save checkpoint every N epochs |
-| `--data-dir` | `data` | Path to data directory |
-| `--output-dir` | `.` | Path for output (models, logs, affinities) |
-| `--resume` | -- | Path to checkpoint file to resume training |
-
-**Examples:**
-
-```bash
-# Train on KIBA with DTI mode on GPU
-python train.py --dataset kiba --task-mode dti --device cuda:0
-
-# Train with custom hyperparameters
-python train.py --dataset davis --epochs 300 --batch-size 64 --lr 1e-4
-
-# Train with multi-task mode (all prediction heads active)
-python train.py --dataset bindingdb --task-mode multi --epochs 500
-
-# Custom directories
-python train.py --dataset davis --data-dir /path/to/data --output-dir /path/to/output
+During training you will see:
+```
+2026-05-02 17:00:00 [train] INFO: DrugForge | Dataset: davis | Mode: dta | Device: cuda:0
+2026-05-02 17:00:00 [train] INFO: Batch: 64 | LR: 0.0003 | Epochs: 500
+2026-05-02 17:00:00 [train] INFO: Parameters: 12,456,789
+Epoch 1: 100%|████████| 125/125 [00:45<00:00] Pri=1.234 LM=4.567 KL=0.001 Aux=0.890
+Epoch 2: 100%|████████| 125/125 [00:44<00:00] Pri=1.100 LM=4.321 KL=0.002 Aux=0.856
+...
+2026-05-02 17:15:00 [train] INFO: Best model saved!
+2026-05-02 17:15:00 [train] INFO:   mse: 0.2341
+2026-05-02 17:15:00 [train] INFO:   ci: 0.8812
 ```
 
-### Resume from Checkpoint
+Output files:
+```
+saved_models/drugforge_davis.pth                  # Best model
+saved_models/drugforge_davis_checkpoint.pth        # Latest checkpoint (for resume)
+logs/log_davis_<timestamp>.txt                     # Loss history
+Affinities/estimated_davis.txt                     # Predicted affinities
+Affinities/true_davis.txt                          # Ground truth
+```
 
-If training is interrupted, resume from the last checkpoint:
-
+**Resume after interruption:**
 ```bash
 python train.py --dataset davis --resume saved_models/drugforge_davis_checkpoint.pth
 ```
 
-### Graceful Shutdown
+**Graceful shutdown:** Press `Ctrl+C` once. DrugForge saves a checkpoint and exits cleanly. Press twice to force-quit.
 
-Press `Ctrl+C` once during training. DrugForge will:
-1. Finish the current epoch
-2. Save a full checkpoint (model, optimizer, balancer state, epoch number)
-3. Log the resume command
-4. Exit cleanly
+### Step 4: Evaluate the Model
 
-Pressing `Ctrl+C` twice forces immediate exit.
-
-### Training Output
-
+```bash
+python evaluate.py --dataset davis
+python evaluate.py --dataset davis --device cuda:0 --batch-size 256
 ```
-saved_models/
-  drugforge_davis.pth                  # Best model (lowest MSE or highest AUROC)
-  drugforge_davis_checkpoint.pth       # Latest periodic checkpoint (for resume)
-logs/
-  log_davis_<timestamp>.txt            # Per-epoch loss breakdown
-Affinities/
-  estimated_davis.txt                  # Predicted affinities on test set
-  true_davis.txt                       # Ground truth affinities
+
+Output:
+```
+2026-05-02 17:30:00 [evaluate] INFO: Evaluation (DTA)
+2026-05-02 17:30:05 [evaluate] INFO:   MSE: 0.2341
+2026-05-02 17:30:05 [evaluate] INFO:   RMSE: 0.4838
+2026-05-02 17:30:05 [evaluate] INFO:   CI: 0.8812
+2026-05-02 17:30:05 [evaluate] INFO:   RM2: 0.6534
+2026-05-02 17:30:05 [evaluate] INFO:   Pearson: 0.8901
+2026-05-02 17:30:05 [evaluate] INFO:   Spearman: 0.8756
+```
+
+### Step 5: Generate Drug Molecules
+
+**Batch generation from test set:**
+```bash
+python generate.py davis --random-sample --device cuda:0
+```
+
+Output saved to `generated_results/davis/generated_smiles.txt`.
+
+**Interactive generation for a specific protein target:**
+```bash
+python infer.py \
+    --protein "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEK..." \
+    --smiles "CC(=O)Oc1ccccc1C(=O)O" \
+    --affinity 7.5 \
+    --n-molecules 50 \
+    --output candidates.txt
+```
+
+Output:
+```
+2026-05-02 17:45:00 [infer] INFO: DrugForge loaded | 12,456,789 params | cpu
+2026-05-02 17:45:05 [infer] INFO: ============================================================
+2026-05-02 17:45:05 [infer] INFO:   RESULTS
+2026-05-02 17:45:05 [infer] INFO: ============================================================
+2026-05-02 17:45:05 [infer] INFO:   Generated:  50
+2026-05-02 17:45:05 [infer] INFO:   Valid:       42 (84.0%)
+2026-05-02 17:45:05 [infer] INFO:   Unique:      38 (90.5%)
+2026-05-02 17:45:05 [infer] INFO:   Novel:       36 (94.7%)
+2026-05-02 17:45:05 [infer] INFO: Novel drug candidates:
+2026-05-02 17:45:05 [infer] INFO:     1. CC(=O)c1ccc(O)cc1
+2026-05-02 17:45:05 [infer] INFO:     2. c1ccc(-c2nccn2)cc1
+...
 ```
 
 ---
 
-## Evaluation
+## Execution: Individual Scripts
+
+### `create_data.py` -- Data Preparation
 
 ```bash
-# Evaluate a trained model
-python evaluate.py --dataset davis
+python create_data.py <dataset_name> [--esm2] [--no-aux]
+```
 
-# With GPU and larger batch size
-python evaluate.py --dataset kiba --device cuda:0 --batch-size 256
+| Argument | Description |
+|----------|-------------|
+| `<dataset_name>` | `davis`, `kiba`, `bindingdb`, or omit for all |
+| `--esm2` | Use ESM-2 protein embeddings (requires `fair-esm`) |
+| `--no-aux` | Skip auxiliary task targets (faster processing) |
+
+### `train.py` -- Model Training
+
+```bash
+python train.py [OPTIONS]
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--dataset` | `bindingdb` | `davis`, `kiba`, or `bindingdb` |
+| `--task-mode` | `dta` | `dta`, `dti`, `moa`, or `multi` |
+| `--device` | auto | `cpu`, `cuda:0`, `cuda:1`, etc. |
+| `--epochs` | `500` | Number of training epochs |
+| `--batch-size` | `32` | Training batch size |
+| `--lr` | `3e-4` | AdamW learning rate |
+| `--eval-every` | `20` | Evaluate every N epochs |
+| `--checkpoint-every` | `50` | Save checkpoint every N epochs |
+| `--data-dir` | `data` | Path to data directory |
+| `--output-dir` | `.` | Path for output (models, logs) |
+| `--resume` | -- | Path to checkpoint to resume from |
+
+### `evaluate.py` -- Model Evaluation
+
+```bash
+python evaluate.py --dataset <name> [--device <dev>] [--batch-size <N>]
 ```
 
 | Argument | Default | Description |
@@ -281,101 +363,56 @@ python evaluate.py --dataset kiba --device cuda:0 --batch-size 256
 | `--device` | `cpu` | `cpu` or `cuda:N` |
 | `--batch-size` | `128` | Evaluation batch size |
 
-The script loads the best model from `saved_models/drugforge_<dataset>.pth` and reports all relevant metrics. If generated SMILES exist at `generated_results/<dataset>/generated_smiles.txt`, it also reports generation metrics (validity, uniqueness, novelty).
-
----
-
-## Drug Generation
-
-### Batch Generation
-
-Generate molecules for all test set entries:
+### `generate.py` -- Batch Drug Generation
 
 ```bash
-# Greedy decoding
-python generate.py davis
-
-# Stochastic sampling (more diverse)
-python generate.py davis --random-sample
-
-# On GPU
-python generate.py kiba --device cuda:0 --random-sample --batch-size 4
+python generate.py <dataset> [--device <dev>] [--random-sample] [--batch-size <N>]
 ```
-
-Output is saved to `generated_results/<dataset>/generated_smiles.txt`.
-
-### Interactive Inference
-
-Generate novel drug candidates for a specific protein target:
-
-```bash
-# From a protein sequence
-python infer.py \
-    --protein "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRVGDGTQDNLSGAEKAVQVKVKALPDAQFEVVHSLAKWKRQQIAATGFHFIPFIQRESDHEV..." \
-    --smiles "CC(=O)Oc1ccccc1C(=O)O" \
-    --n-molecules 50 \
-    --affinity 7.5
-
-# From a FASTA file
-python infer.py \
-    --fasta target_protein.fasta \
-    --smiles "c1ccccc1" \
-    --n-molecules 100
-
-# Greedy decoding (less diverse, more conservative)
-python infer.py \
-    --protein "MKTAY..." \
-    --smiles "CCO" \
-    --no-random-sample
-
-# Save results to file
-python infer.py \
-    --protein "MKTAY..." \
-    --smiles "CCO" \
-    --output generated_drugs.txt
-```
-
-### Affinity Prediction
-
-Predict binding affinity for a specific drug-protein pair:
-
-```bash
-python infer.py \
-    --mode predict \
-    --protein "MKTAYIAKQRQISFVKSH..." \
-    --smiles "CC(=O)Oc1ccccc1C(=O)O"
-```
-
-### Compound Screening
-
-Rank a list of compounds by predicted affinity to a protein target:
-
-```bash
-# Create a file with one SMILES per line
-echo -e "CCO\nc1ccccc1\nCC(=O)O\nCCCCO" > compounds.txt
-
-python infer.py \
-    --mode screen \
-    --protein "MKTAYIAKQRQISFVKSH..." \
-    --smiles "CCO" \
-    --screen-file compounds.txt \
-    --output ranked_compounds.txt
-```
-
-### Inference CLI Reference
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--protein` | -- | Protein amino acid sequence (mutually exclusive with `--fasta`) |
+| `<dataset>` | required | `davis`, `kiba`, or `bindingdb` |
+| `--device` | `cpu` | `cpu` or `cuda:N` |
+| `--random-sample` | off | Enable stochastic sampling (more diverse) |
+| `--batch-size` | `1` | Generation batch size |
+
+### `infer.py` -- Interactive Inference
+
+```bash
+# Generate novel drugs
+python infer.py --protein "MKTAY..." --smiles "CCO" --n-molecules 20
+
+# From a FASTA file
+python infer.py --fasta target.fasta --smiles "CCO" --n-molecules 100
+
+# Predict affinity for a known pair
+python infer.py --mode predict --protein "MKTAY..." --smiles "CC(=O)Oc1ccccc1C(=O)O"
+
+# Screen a compound library
+python infer.py --mode screen --protein "MKTAY..." --smiles "CCO" --screen-file compounds.txt --output ranked.txt
+
+# Greedy decoding (less diverse)
+python infer.py --protein "MKTAY..." --smiles "CCO" --no-random-sample
+
+# Use a specific model and device
+python infer.py --protein "MKTAY..." --smiles "CCO" \
+    --model saved_models/drugforge_kiba.pth \
+    --tokenizer data/kiba_tokenizer.json \
+    --device cuda:0
+```
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--protein` | -- | Protein amino acid sequence (or use `--fasta`) |
 | `--fasta` | -- | Path to FASTA file (mutually exclusive with `--protein`) |
 | `--smiles` | required | Reference drug SMILES (structural seed) |
-| `--affinity` | `7.0` | Target binding affinity on pKd scale |
+| `--affinity` | `7.0` | Target binding affinity (pKd scale) |
 | `--mode` | `generate` | `generate`, `predict`, or `screen` |
-| `--screen-file` | -- | File with SMILES to screen (one per line, for `--mode screen`) |
+| `--screen-file` | -- | File with SMILES to screen (one per line) |
 | `--n-molecules` | `20` | Number of molecules to generate |
-| `--no-random-sample` | false | Use greedy decoding instead of stochastic sampling |
-| `--model` | `saved_models/drugforge_davis.pth` | Path to trained model checkpoint |
-| `--tokenizer` | `data/davis_tokenizer.pkl` | Path to tokenizer file (`.json` or `.pkl`) |
+| `--no-random-sample` | false | Use greedy decoding |
+| `--model` | `saved_models/drugforge_davis.pth` | Path to model checkpoint |
+| `--tokenizer` | `data/davis_tokenizer.pkl` | Path to tokenizer (`.json` or `.pkl`) |
 | `--device` | `cpu` | `cpu` or `cuda:N` |
 | `--output` | -- | Save results to file |
 
@@ -389,8 +426,8 @@ from infer import DrugForgeInference
 # Load a trained model
 engine = DrugForgeInference(
     model_path="saved_models/drugforge_davis.pth",
-    tokenizer_path="data/davis_tokenizer.json",  # or .pkl
-    device="cpu",   # or "cuda:0"
+    tokenizer_path="data/davis_tokenizer.json",   # or .pkl
+    device="cpu",                                  # or "cuda:0"
 )
 
 # --- Generate novel drug molecules ---
@@ -428,7 +465,8 @@ for r in ranked:
 
 ### Return Values
 
-**`generate_for_target()`** returns a dict:
+**`generate_for_target()`** returns:
+
 | Key | Type | Description |
 |-----|------|-------------|
 | `generated` | `list[str]` | All generated SMILES (may include invalid) |
@@ -437,7 +475,8 @@ for r in ranked:
 | `novel` | `list[str]` | Unique SMILES different from the reference |
 | `stats` | `dict` | Counts and ratios (validity, uniqueness, novelty) |
 
-**`predict_interaction()`** returns a dict (keys depend on task mode):
+**`predict_interaction()`** returns (keys depend on task mode):
+
 | Key | Task Mode | Description |
 |-----|-----------|-------------|
 | `affinity` | `dta`, `multi` | Predicted binding affinity (pKd) |
@@ -453,10 +492,10 @@ for r in ranked:
 ### Starting the Server
 
 ```bash
-# Install API dependencies
+# Install API dependencies first
 pip install -e ".[api]"
 
-# Start with default settings
+# Start with defaults
 python api.py
 
 # Or with uvicorn directly
@@ -475,7 +514,7 @@ uvicorn api:app --host 0.0.0.0 --port 8000 --workers 1
 | `DRUGFORGE_TOKENIZER` | `data/davis_tokenizer.json` | Path to tokenizer file |
 | `DRUGFORGE_DEVICE` | `cpu` | Inference device |
 
-Interactive API docs are available at `http://localhost:8000/docs` (Swagger UI).
+Interactive API docs: `http://localhost:8000/docs` (Swagger UI).
 
 ### API Endpoints
 
@@ -521,13 +560,6 @@ curl -X POST http://localhost:8000/generate \
     "random_sample": true
   }'
 ```
-```json
-{
-  "novel": ["CC(=O)c1ccc(O)cc1", "..."],
-  "valid": ["CC(=O)c1ccc(O)cc1", "CC(=O)Oc1ccccc1C(=O)O", "..."],
-  "stats": {"total_generated": 20, "valid_count": 16, "unique_count": 14, "novel_count": 13, "validity": 0.8, "uniqueness": 0.875, "novelty": 0.929}
-}
-```
 
 **Screen compounds:**
 ```bash
@@ -537,9 +569,6 @@ curl -X POST http://localhost:8000/screen \
     "protein_sequence": "MKTAYIAKQRQISFVKSH...",
     "smiles_list": ["CCO", "c1ccccc1", "CC(=O)O"]
   }'
-```
-```json
-{"compounds": [{"smiles": "c1ccccc1", "affinity": 7.2}, {"smiles": "CCO", "affinity": 5.8}, {"smiles": "CC(=O)O", "affinity": 5.1}]}
 ```
 
 ---
@@ -573,7 +602,7 @@ docker run --gpus all -p 8000:8000 \
 | Mode | Primary Task | Loss Function | Use Case |
 |------|-------------|---------------|----------|
 | `dta` | Affinity regression | MSE | Binding affinity prediction (pKd scale) |
-| `dti` | Interaction classification | Binary Cross-Entropy | Binary binding prediction (interacts/does not) |
+| `dti` | Interaction classification | Binary Cross-Entropy | Binary binding prediction (interacts / does not) |
 | `moa` | Mechanism classification | Binary Cross-Entropy | Activator vs. inhibitor classification |
 | `multi` | All heads active | Combined | Joint multi-task training |
 
@@ -646,7 +675,7 @@ Edit `config.py` `ModelConfig` or override via CLI where applicable:
 | `protein_embed_dim` | `256` | Protein encoder embedding dimension |
 | `protein_layers` | `4` | Protein Transformer layers |
 | `protein_heads` | `8` | Protein Transformer attention heads |
-| `use_esm2` | `False` | Use ESM-2 protein language model instead of built-in encoder |
+| `use_esm2` | `False` | Use ESM-2 protein language model |
 | `cross_attn_layers` | `2` | Bidirectional cross-attention layers |
 | `latent_dim` | `256` | VAE latent dimension |
 | `decoder_layers` | `6` | Molecule decoder Transformer layers |
@@ -664,9 +693,9 @@ Edit `config.py` `ModelConfig` or override via CLI where applicable:
 | `learning_rate` | `3e-4` | `--lr` | AdamW learning rate |
 | `num_epochs` | `500` | `--epochs` | Total training epochs |
 | `eval_every` | `20` | `--eval-every` | Evaluate every N epochs |
-| `seed` | `42` | -- | Random seed |
-| `grad_clip` | `1.0` | -- | Gradient clipping norm |
-| `kl_warmup_epochs` | `30` | -- | KL divergence annealing warmup |
+| `seed` | `42` | -- | Random seed for reproducibility |
+| `grad_clip` | `1.0` | -- | Gradient clipping max norm |
+| `kl_warmup_epochs` | `30` | -- | KL divergence annealing warmup epochs |
 | `kl_max_weight` | `0.005` | -- | Maximum KL loss weight |
 
 ---
@@ -674,7 +703,7 @@ Edit `config.py` `ModelConfig` or override via CLI where applicable:
 ## Testing
 
 ```bash
-# Run the full pytest suite (54 tests)
+# Run the full pytest suite (54 tests, ~60s)
 pytest tests/ -v
 
 # Run with coverage report
@@ -683,16 +712,19 @@ pytest tests/ --cov=. --cov-report=term-missing
 # Run a specific test file
 pytest tests/test_model.py -v
 
-# Run the validation suite (metrics, tokenizer, data pipeline, training convergence, generation)
+# Run the validation suite (61 checks, ~120s)
 python validate.py
 ```
 
-The test suite covers:
-- **Metrics** -- MSE, RMSE, CI, Pearson, Spearman, AUPR, generation metrics, classification metrics
-- **Tokenizer** -- round-trip encoding/decoding, BOS/EOS framing, unknown token handling, JSON serialization
-- **Model** -- forward pass shapes, loss finiteness, backward pass gradients, greedy and sampling generation, training convergence
-- **Data pipeline** -- atom descriptors (17-dim), bond descriptors (6-dim), protein encoding, graph construction, Morgan FP, molecular descriptors, functional groups
-- **Input validation** -- protein sequence validation, SMILES validation, edge cases
+**Test coverage:**
+
+| Test file | What it covers |
+|-----------|----------------|
+| `test_metrics.py` | MSE, RMSE, CI, Pearson, Spearman, AUPR, generation metrics, classification metrics |
+| `test_tokenizer.py` | Round-trip encoding/decoding, BOS/EOS framing, unknown tokens, JSON serialization |
+| `test_model.py` | Forward pass shapes, loss finiteness, backward gradients, greedy and sampling generation, training convergence |
+| `test_data_pipeline.py` | Atom descriptors (17-dim), bond descriptors (6-dim), protein encoding, graph construction, Morgan FP, molecular descriptors, functional groups |
+| `test_infer.py` | Protein sequence validation, SMILES validation, edge cases |
 
 CI runs automatically on push/PR via GitHub Actions (`.github/workflows/ci.yml`), testing against Python 3.10, 3.11, and 3.12.
 
@@ -714,7 +746,7 @@ DrugForge/
   generate.py          Batch drug generation from test set
   infer.py             Interactive inference (generate, predict, screen)
   api.py               FastAPI REST server
-  validate.py          Truth-set validation suite
+  validate.py          Truth-set validation suite (61 checks)
   create_data.py       Data preparation pipeline
   requirements.txt     Pip dependencies
   pyproject.toml       Package metadata, dependencies, build config
@@ -725,19 +757,41 @@ DrugForge/
     workflows/
       ci.yml           GitHub Actions CI pipeline
   tests/
-    conftest.py        pytest configuration
+    conftest.py        pytest path configuration
     test_metrics.py    Metric correctness tests
-    test_tokenizer.py  Tokenizer round-trip and serialization tests
+    test_tokenizer.py  Tokenizer tests
     test_model.py      Model forward/backward/generation tests
     test_data_pipeline.py  Featurization and graph construction tests
     test_infer.py      Input validation tests
-  data/
-    davis_train.csv    Davis training data
-    davis_test.csv     Davis test data
-    ...
+  data/                CSV datasets + tokenizers
   saved_models/        Trained model checkpoints
   logs/                Training logs
 ```
+
+---
+
+## Troubleshooting
+
+**PyTorch Geometric fails to install:**
+Install `torch-scatter` and `torch-sparse` first with the correct PyTorch+CUDA version URL from [pyg.org/whl](https://data.pyg.org/whl/), then install `torch-geometric`.
+
+**`RuntimeError: CUDA out of memory`:**
+Reduce `--batch-size` (try 16 or 8) or use `--device cpu`.
+
+**`FileNotFoundError: data/processed/davis_train.pt`:**
+Run `python create_data.py davis` first to preprocess the data.
+
+**`No tokenizer found for davis`:**
+Ensure `data/davis_tokenizer.json` or `data/davis_tokenizer.pkl` exists. Run `python create_data.py davis` to generate it.
+
+**`ModuleNotFoundError: No module named 'torch_geometric'`:**
+See [Step 4](#step-4-install-pytorch-geometric) of the installation instructions.
+
+**Validation suite fails on test 4 or 6:**
+Ensure you have `data/davis_train.csv` in the `data/` directory. Tests 4 and 6 use real Davis data.
+
+**Generation produces mostly invalid SMILES:**
+Train the model for at least 200-300 epochs. An untrained model generates random token sequences.
 
 ---
 
