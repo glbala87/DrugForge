@@ -258,7 +258,8 @@ def test_training():
     tok = MolTokenizer(vocabs)
 
     model = DrugForge(tok, cfg)
-    balancer = MultiTaskBalancer(num_tasks=3, kl_max_weight=0.005, kl_warmup_epochs=5)
+    balancer = MultiTaskBalancer(task_names=['primary', 'lm', 'contrastive'],
+                                kl_max_weight=0.005, kl_warmup_epochs=5)
 
     optimizer = optim.AdamW(
         list(model.parameters()) + list(balancer.parameters()), lr=1e-3,
@@ -289,11 +290,11 @@ def test_training():
     model.train()
     for step in range(20):
         optimizer.zero_grad()
-        aff, lm, kl, cl = model(batch)
+        aff, lm, kl, cl, aux = model(batch)
         mse_loss = mse_fn(aff, batch.y.view(-1, 1).float())
 
         total, info = balancer(
-            {'mse': mse_loss, 'lm': lm, 'kl': kl, 'contrastive': cl},
+            {'primary': mse_loss, 'lm': lm, 'kl': kl, 'contrastive': cl},
             epoch=step,
         )
         total.backward()
@@ -307,7 +308,7 @@ def test_training():
           f"first5={np.mean(losses[:5]):.3f}, last5={np.mean(losses[-5:]):.3f}")
 
     # Check balancer learned different weights
-    sigmas = [torch.exp(0.5 * balancer.log_vars[i]).item() for i in range(3)]
+    sigmas = [torch.exp(0.5 * v).item() for v in balancer.log_vars.values()]
     check("Task weights changed from init", not all(abs(s - 1.0) < 1e-4 for s in sigmas),
           f"sigmas={sigmas}")
 
@@ -420,7 +421,7 @@ def test_end_to_end():
     model = DrugForge(tok, cfg)
     model.train()
 
-    aff, lm, kl, cl = model(batch)
+    aff, lm, kl, cl, aux = model(batch)
     check("Real data forward: affinity shape", aff.shape == (8, 1), f"shape={aff.shape}")
     check("Real data forward: losses finite",
           all(torch.isfinite(l) for l in [lm, kl, cl]),
